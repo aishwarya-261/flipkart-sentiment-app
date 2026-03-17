@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import nltk
 import pickle
+import os
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.pipeline import Pipeline
@@ -19,26 +20,22 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────
-# NLTK Downloads (runs once)
+# NLTK Downloads
 # ─────────────────────────────────────────────────────────────
-@st.cache_resource
-def download_nltk():
-    nltk.download('stopwords', quiet=True)
-    nltk.download('wordnet', quiet=True)
-    nltk.download('omw-1.4', quiet=True)
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
 
-download_nltk()
+# ─────────────────────────────────────────────────────────────
+# Globals (no nested cache)
+# ─────────────────────────────────────────────────────────────
+lemmatizer = WordNetLemmatizer()
+stop_words  = set(stopwords.words('english'))
 
 # ─────────────────────────────────────────────────────────────
 # Text Cleaning
 # ─────────────────────────────────────────────────────────────
-@st.cache_resource
-def get_cleaner():
-    lemmatizer = WordNetLemmatizer()
-    stop_words = set(stopwords.words('english'))
-    return lemmatizer, stop_words
-
-def clean_text(text, lemmatizer, stop_words):
+def clean_text(text):
     if not isinstance(text, str):
         return ""
     text = text.lower()
@@ -49,29 +46,25 @@ def clean_text(text, lemmatizer, stop_words):
     return " ".join(tokens)
 
 # ─────────────────────────────────────────────────────────────
-# Load or Train Model
+# Load / Train Model
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    import os
-    lemmatizer, stop_words = get_cleaner()
-
-    # Try loading saved model first
     if os.path.exists("sentiment_model.pkl"):
         with open("sentiment_model.pkl", "rb") as f:
-            return pickle.load(f), lemmatizer, stop_words
+            return pickle.load(f)
 
-    # Otherwise train from scratch
     df = pd.read_csv("product_reviews_.csv")
-    df['cleaned_review']  = df['review'].apply(lambda x: clean_text(x, lemmatizer, stop_words))
-    df['cleaned_summary'] = df['summary'].apply(lambda x: clean_text(x, lemmatizer, stop_words))
+    df['cleaned_review']  = df['review'].apply(clean_text)
+    df['cleaned_summary'] = df['summary'].apply(clean_text)
     df['combined_text']   = df['cleaned_review'] + " " + df['cleaned_summary']
     df = df[df['combined_text'].str.strip() != ""].reset_index(drop=True)
 
     label_map = {'positive': 2, 'neutral': 1, 'negative': 0}
     df['label'] = df['sentiment'].str.lower().map(label_map)
 
-    X, y = df['combined_text'], df['label']
+    X = df['combined_text']
+    y = df['label']
 
     pipeline = Pipeline([
         ('tfidf', TfidfVectorizer(
@@ -83,17 +76,15 @@ def load_model():
         ('clf', LogisticRegression(
             max_iter=1000,
             C=1.0,
-            solver='lbfgs',
             random_state=42
         ))
     ])
     pipeline.fit(X, y)
 
-    # Save for next time
     with open("sentiment_model.pkl", "wb") as f:
         pickle.dump(pipeline, f)
 
-    return pipeline, lemmatizer, stop_words
+    return pipeline
 
 # ─────────────────────────────────────────────────────────────
 # UI
@@ -102,13 +93,11 @@ st.title("🛒 Flipkart Review Sentiment Analyzer")
 st.markdown("Enter a product review below and get instant sentiment prediction.")
 st.markdown("---")
 
-# Load model with spinner
-with st.spinner("Loading model... (first run may take ~30 sec to train)"):
-    model, lemmatizer, stop_words = load_model()
+with st.spinner("Loading model... (first run trains on your data, ~30 sec)"):
+    model = load_model()
 
 st.success("Model ready!", icon="✅")
 
-# ─── Input ───
 st.subheader("📝 Enter Your Review")
 review_input = st.text_area(
     label="Review text",
@@ -119,58 +108,45 @@ review_input = st.text_area(
 
 predict_btn = st.button("Analyze Sentiment", type="primary", use_container_width=True)
 
-# ─── Prediction ───
 if predict_btn:
     if not review_input.strip():
         st.warning("Please enter a review before clicking Analyze.")
     else:
-        cleaned = clean_text(review_input, lemmatizer, stop_words)
+        cleaned = clean_text(review_input)
         pred    = model.predict([cleaned])[0]
         proba   = model.predict_proba([cleaned])[0]
 
-        label_map    = {2: "Positive", 1: "Neutral", 0: "Negative"}
-        emoji_map    = {2: "😊", 1: "😐", 0: "😠"}
-        color_map    = {2: "green", 1: "orange", 0: "red"}
-
-        sentiment = label_map[pred]
-        emoji     = emoji_map[pred]
-        color     = color_map[pred]
+        label_map  = {2: "Positive", 1: "Neutral", 0: "Negative"}
+        emoji_map  = {2: "😊", 1: "😐", 0: "😠"}
+        color_map  = {2: "#d4edda", 1: "#fff3cd", 0: "#f8d7da"}
+        border_map = {2: "green", 1: "orange", 0: "red"}
+        text_map   = {2: "green", 1: "#856404", 0: "red"}
 
         st.markdown("---")
         st.subheader("🔍 Result")
-
         st.markdown(
             f"""
             <div style="
-                background-color: {'#d4edda' if pred==2 else '#fff3cd' if pred==1 else '#f8d7da'};
-                border-left: 6px solid {'green' if pred==2 else 'orange' if pred==1 else 'red'};
+                background-color: {color_map[pred]};
+                border-left: 6px solid {border_map[pred]};
                 padding: 20px 24px;
                 border-radius: 8px;
                 margin-bottom: 16px;
             ">
-                <h2 style="margin:0; color:{color};">{emoji} {sentiment}</h2>
+                <h2 style="margin:0; color:{text_map[pred]};">{emoji_map[pred]} {label_map[pred]}</h2>
                 <p style="margin:4px 0 0 0; color:#555;">Sentiment detected in your review</p>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-        # Confidence scores
         st.subheader("📊 Confidence Scores")
-        conf_df = pd.DataFrame({
-            "Sentiment": ["Negative 😠", "Neutral 😐", "Positive 😊"],
-            "Confidence": [f"{proba[0]*100:.1f}%", f"{proba[1]*100:.1f}%", f"{proba[2]*100:.1f}%"],
-            "Score": [proba[0], proba[1], proba[2]]
-        })
+        for label, score in zip(["Negative 😠", "Neutral 😐", "Positive 😊"], proba):
+            st.markdown(f"**{label}** — {score*100:.1f}%")
+            st.progress(float(score))
 
-        for _, row in conf_df.iterrows():
-            st.markdown(f"**{row['Sentiment']}** — {row['Confidence']}")
-            st.progress(float(row['Score']))
-
-        # Show cleaned text (expandable)
         with st.expander("🔎 See cleaned text used for prediction"):
             st.code(cleaned if cleaned else "(empty after cleaning)")
 
-# ─── Footer ───
 st.markdown("---")
 st.caption("Built with Streamlit · Logistic Regression + TF-IDF · Trained on Flipkart Reviews")
