@@ -1,4 +1,4 @@
 streamlit
 numpy
-tensorflow-cpu
+tensorflow-cpu==2.15.1
 nltk
